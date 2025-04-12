@@ -4,6 +4,8 @@ from fastapi.responses import HTMLResponse
 #from .schemas import StatusResponse
 import random
 
+from pydantic import BaseModel
+
 app = FastAPI()
 
 # Diccionario de sistemas_averiado
@@ -15,15 +17,21 @@ SYSTEM_CODES = {
     "deflector_shield": "SHLD-05"
 }
 # Punto crítico (de la imagen)
-# Datos específicos para la curva de saturación
-SATURATION_DATA = {
-    # Presión (MPa): {volumen_líquido, volumen_vapor}
-    0.1: {"v_liq": 0.0010, "v_vap": 1.6940},
-    1.0: {"v_liq": 0.0011, "v_vap": 0.1944},
-    5.0: {"v_liq": 0.0025, "v_vap": 0.1000},
-    10.0: {"v_liq": 0.0035, "v_vap": 0.0035},  # Punto crítico exacto
-    15.0: {"v_liq": 0.0040, "v_vap": 0.0020}
+saturation_data = {
+    10: {"v_l": 0.0035, "v_v": 0.0035},  # punto crítico
+    5: {"v_l": 0.0012, "v_v": 0.02},
+    1: {"v_l": 0.001, "v_v": 0.1},
+    0.05: {"v_l": 0.00105, "v_v": 30.0},  # aproximado de la imagen
+    # puedes seguir llenando con más valores
 }
+
+# Se asume que todos los valores de presión en este diccionario tienen T > 30 °C
+MIN_PRESSURE = 0.05  # MPa
+MAX_PRESSURE = 10.0  # MPa
+
+class PhaseChangeResponse(BaseModel):
+    specific_volume_liquid: float
+    specific_volume_vapor: float
 
 # Variable sistema dañado actual valor 
 current_damaged_system = None
@@ -62,47 +70,15 @@ async def get_repair_bay():
 async def post_teapot():
     raise HTTPException(status_code=418, detail="I'm a teapot")
 
-@app.get("/phase-change-diagram")
-async def get_phase_diagram(
-    pressure: float = Query(..., gt=0, description="Presión en MPa")
-):
-    """
-    Devuelve los volúmenes específicos para líquido y vapor en la curva de saturación.
-    Ejemplo para pressure=10 MPa:
-    {
-        "specific_volume_liquid": 0.0035,
-        "specific_volume_vapor": 0.0035
-    }
-    """
-    # Caso exacto para el punto crítico (10 MPa)
-    if math.isclose(pressure, 10.0, rel_tol=1e-3):
-        return {
-            "specific_volume_liquid": 0.0035,
-            "specific_volume_vapor": 0.0035
-        }
-    
-    # Interpolación para otros valores
-    pressures = sorted(SATURATION_DATA.keys())
-    
-    # Encontrar los puntos adyacentes
-    for i in range(len(pressures)-1):
-        if pressures[i] <= pressure <= pressures[i+1]:
-            # Interpolación lineal directa
-            frac = (pressure - pressures[i]) / (pressures[i+1] - pressures[i])
-            v_liq = SATURATION_DATA[pressures[i]]["v_liq"] + frac * (
-                SATURATION_DATA[pressures[i+1]]["v_liq"] - SATURATION_DATA[pressures[i]]["v_liq"])
-            v_vap = SATURATION_DATA[pressures[i]]["v_vap"] + frac * (
-                SATURATION_DATA[pressures[i+1]]["v_vap"] - SATURATION_DATA[pressures[i]]["v_vap"])
-            
-            return {
-                "specific_volume_liquid": round(v_liq, 6),
-                "specific_volume_vapor": round(v_vap, 6)
-            }
-    
-    # Si la presión está fuera del rango, devolver el valor más cercano
-    closest_p = min(SATURATION_DATA.keys(), key=lambda x: abs(x - pressure))
+@app.get("/phase-change-diagram", response_model=PhaseChangeResponse)
+def get_phase_change_data(pressure: float = Query(..., gt=0)):
+    if pressure not in saturation_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No data available for pressure={pressure} MPa or T <= 30°C"
+        )
+    data = saturation_data[pressure]
     return {
-        "specific_volume_liquid": SATURATION_DATA[closest_p]["v_liq"],
-        "specific_volume_vapor": SATURATION_DATA[closest_p]["v_vap"],
-        "note": f"Usando valores para {closest_p} MPa (presión fuera de rango estándar)"
+        "specific_volume_liquid": data["v_l"],
+        "specific_volume_vapor": data["v_v"]
     }
